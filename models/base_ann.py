@@ -4,12 +4,12 @@ import torch.nn as nn
 
 class BaseANN(nn.Module):
     """
-    Fully configurable ANN model.
+    Fully configurable Artificial Neural Network.
 
     Parameters:
-    - input_size
-    - output_size
-    - hidden_layers (list)
+    - input_size (int)
+    - output_size (int)
+    - hidden_layers (list of int)
     - activation (str)
     - dropout (float)
     - init_type (str)
@@ -19,42 +19,49 @@ class BaseANN(nn.Module):
         self,
         input_size,
         output_size,
-        hidden_layers=[64, 32],
+        hidden_layers=None,
         activation="relu",
         dropout=0.0,
         init_type="xavier"
     ):
         super(BaseANN, self).__init__()
 
+        if hidden_layers is None:
+            hidden_layers = [64, 32]
+
         self.hidden_layers = hidden_layers
         self.dropout_rate = dropout
         self.init_type = init_type
+        self.activation_name = activation.lower()
 
         # ---------------- Activation Mapping ----------------
-        if activation.lower() == "relu":
-            self.activation = nn.ReLU()
-        elif activation.lower() == "tanh":
-            self.activation = nn.Tanh()
-        elif activation.lower() == "sigmoid":
-            self.activation = nn.Sigmoid()
-        else:
+        activation_map = {
+            "relu": nn.ReLU(),
+            "tanh": nn.Tanh(),
+            "sigmoid": nn.Sigmoid()
+        }
+
+        if self.activation_name not in activation_map:
             raise ValueError("Unsupported activation function")
 
-        # ---------------- Hidden Layers ----------------
-        self.layers = nn.ModuleList()
+        self.activation = activation_map[self.activation_name]
 
+        # ---------------- Build Layers ----------------
+        layers = []
         prev_size = input_size
+
         for hidden_size in hidden_layers:
-            self.layers.append(nn.Linear(prev_size, hidden_size))
+            layers.append(nn.Linear(prev_size, hidden_size))
+            layers.append(self.activation)
+            layers.append(nn.Dropout(dropout))
             prev_size = hidden_size
 
-        # ---------------- Output Layer ----------------
+        self.hidden_block = nn.Sequential(*layers)
+
+        # Output layer
         self.output_layer = nn.Linear(prev_size, output_size)
 
-        # ---------------- Dropout ----------------
-        self.dropout = nn.Dropout(dropout)
-
-        # ---------------- Initialization ----------------
+        # Initialize weights
         self.apply(self._init_weights)
 
     # -----------------------------------------------------
@@ -67,7 +74,9 @@ class BaseANN(nn.Module):
                 nn.init.xavier_uniform_(m.weight)
 
             elif self.init_type == "he":
-                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                # Use correct nonlinearity for He init
+                nonlinearity = "relu" if self.activation_name == "relu" else "linear"
+                nn.init.kaiming_uniform_(m.weight, nonlinearity=nonlinearity)
 
             else:
                 raise ValueError("Unsupported initialization type")
@@ -78,14 +87,6 @@ class BaseANN(nn.Module):
     # Forward Pass
     # -----------------------------------------------------
     def forward(self, x):
-
-        for layer in self.layers:
-            x = layer(x)
-            x = self.activation(x)
-
-            if self.dropout_rate > 0:
-                x = self.dropout(x)
-
+        x = self.hidden_block(x)
         x = self.output_layer(x)
-
         return x

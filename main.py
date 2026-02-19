@@ -45,11 +45,8 @@
 #     print(df.head())
 
 from utils.data_loader import preprocess_dataset
-from models.base_ann import BaseANN
-from training.training_loop import train_model
-from training.evaluation import evaluate_model
+from experiment_engine import run_experiment
 
-from sklearn.model_selection import train_test_split
 import torch
 import numpy as np
 import random
@@ -57,7 +54,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
+# ==========================================================
 # Reproducibility
+# ==========================================================
 torch.manual_seed(42)
 np.random.seed(42)
 random.seed(42)
@@ -66,16 +65,19 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(42)
 
 
+# ==========================================================
+# MAIN
+# ==========================================================
 if __name__ == "__main__":
 
     dataset_path = "data/sample.csv"
 
-    # -------------------------------------------------
+    # ------------------------------------------------------
     # Dataset Overview
-    # -------------------------------------------------
-    print("\n==============================")
+    # ------------------------------------------------------
+    print("\n=================================================")
     print("DATASET OVERVIEW")
-    print("==============================")
+    print("=================================================")
 
     df = pd.read_csv(dataset_path)
 
@@ -85,190 +87,151 @@ if __name__ == "__main__":
     print("\nFirst 5 Rows:")
     print(df.head())
 
-    # -------------------------------------------------
+    # ------------------------------------------------------
     # Preprocessing
-    # -------------------------------------------------
+    # ------------------------------------------------------
     X, y, info = preprocess_dataset(dataset_path)
     problem_type = info["problem_type"]
 
-    print("\n==============================")
+    print("\n=================================================")
     print("DATASET ANALYSIS")
-    print("==============================")
-    print("Detected Target Column:", info["target"])
-    print("Detected Problem Type:", problem_type)
-    print("Number of Selected Features:", len(info["features"]))
+    print("=================================================")
+    print("Detected Target Column :", info["target"])
+    print("Detected Problem Type  :", problem_type)
+    print("Number of Features     :", len(info["features"]))
 
-    # -------------------------------------------------
-    # Train / Validation Split
-    # -------------------------------------------------
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
+    # ------------------------------------------------------
+    # Choose Search Strategy
+    # ------------------------------------------------------
+    print("\n1 → Grid Search")
+    print("2 → Optuna")
 
-    # Determine output size
-    if problem_type == "regression":
-        output_size = 1
-    elif problem_type == "binary_classification":
-        output_size = 1
-    else:
-        output_size = len(np.unique(y))
+    choice = input("Enter choice (1 or 2): ").strip()
+    search_strategy = "optuna" if choice == "2" else "grid"
 
-    # -------------------------------------------------
-    # Grid Search Configuration
-    # -------------------------------------------------
-    hidden_layer_options = [[32], [64, 32], [128, 64]]
-    activation_options = ["relu", "tanh"]
-    dropout_options = [0.0, 0.3]
-    init_options = ["xavier", "he"]
+    print(f"\nRunning {search_strategy.upper()} search...\n")
 
-    results = []
+    results = run_experiment(dataset_path, search_strategy=search_strategy)
 
-    print("\n==============================")
-    print("STARTING ANN ARCHITECTURE SEARCH")
-    print("==============================")
+    # ======================================================
+    # GRID SEARCH VISUALIZATION
+    # ======================================================
+    if results["strategy"] == "grid":
 
-    # -------------------------------------------------
-    # Grid Search Loop
-    # -------------------------------------------------
-    for hidden_layers in hidden_layer_options:
-        for activation in activation_options:
-            for dropout in dropout_options:
-                for init_type in init_options:
+        results_df = results["results_df"]
+        best_config = results["best_config"]
 
-                    print("\n----------------------------------")
-                    print("Testing Configuration:")
-                    print("Hidden Layers:", hidden_layers)
-                    print("Activation:", activation)
-                    print("Dropout:", dropout)
-                    print("Initialization:", init_type)
+        print("\nBest Configuration:")
+        print(best_config)
 
-                    model = BaseANN(
-                        input_size=X.shape[1],
-                        output_size=output_size,
-                        hidden_layers=hidden_layers,
-                        activation=activation,
-                        dropout=dropout,
-                        init_type=init_type
-                    )
+        # Sort properly
+        if problem_type == "regression":
+            results_df = results_df.sort_values("score")
+        else:
+            results_df = results_df.sort_values("score", ascending=False)
 
-                    model, train_losses, val_losses = train_model(
-                        model,
-                        X_train,
-                        y_train,
-                        X_val,
-                        y_val,
-                        problem_type,
-                        epochs=50,
-                        patience=5
-                    )
+        print("\nAll Results:")
+        print(results_df)
 
-                    metrics = evaluate_model(model, X_val, y_val, problem_type)
+        # -----------------------------
+        # Plot 1: Score vs Experiment
+        # -----------------------------
+        plt.figure(figsize=(10, 5))
+        plt.plot(results_df["score"].values, marker='o')
+        plt.title("Experiment Score Trend")
+        plt.xlabel("Experiment Index")
+        plt.ylabel("Score")
+        plt.grid(True)
+        plt.show()
 
-                    if problem_type == "regression":
-                        score = metrics["RMSE"]
-                    else:
-                        score = metrics["Accuracy"]
+        # -----------------------------
+        # Plot 2: Hidden Layer Size vs Score
+        # -----------------------------
+        hidden_sizes = results_df["hidden_layers"].astype(str)
+        plt.figure(figsize=(10, 5))
+        plt.scatter(hidden_sizes, results_df["score"])
+        plt.title("Hidden Layer Configuration vs Score")
+        plt.xlabel("Hidden Layers")
+        plt.ylabel("Score")
+        plt.xticks(rotation=45)
+        plt.grid(True)
+        plt.show()
 
-                    results.append({
-                        "hidden_layers": hidden_layers,
-                        "activation": activation,
-                        "dropout": dropout,
-                        "init": init_type,
-                        "score": score
-                    })
+        # -----------------------------
+        # Plot 3: Dropout vs Score
+        # -----------------------------
+        plt.figure(figsize=(8, 5))
+        plt.scatter(results_df["dropout"], results_df["score"])
+        plt.title("Dropout vs Score")
+        plt.xlabel("Dropout Rate")
+        plt.ylabel("Score")
+        plt.grid(True)
+        plt.show()
 
-                    print("Validation Score:", score)
+        # -----------------------------
+        # Plot 4: Activation vs Score
+        # -----------------------------
+        activations = results_df["activation"].unique()
+        for act in activations:
+            subset = results_df[results_df["activation"] == act]
+            plt.scatter(
+                [act] * len(subset),
+                subset["score"]
+            )
 
-    # -------------------------------------------------
-    # Select Best Configuration
-    # -------------------------------------------------
-    if problem_type == "regression":
-        best_config = min(results, key=lambda x: x["score"])
-    else:
-        best_config = max(results, key=lambda x: x["score"])
+        plt.title("Activation Function Impact")
+        plt.xlabel("Activation")
+        plt.ylabel("Score")
+        plt.grid(True)
+        plt.show()
 
-    print("\n==============================")
-    print("BEST CONFIGURATION FOUND")
-    print("==============================")
-    print(best_config)
+    # ======================================================
+    # OPTUNA VISUALIZATION
+    # ======================================================
+    elif results["strategy"] == "optuna":
 
-    # -------------------------------------------------
-    # Results Summary
-    # -------------------------------------------------
-    results_df = pd.DataFrame(results)
+        study = results["study"]
+        best_params = results["best_config"]
+        best_score = results["best_score"]
 
-    print("\nAll Experiment Results (Sorted):")
+        print("\nBest Parameters:")
+        for k, v in best_params.items():
+            print(f"{k}: {v}")
 
-    if problem_type == "regression":
-        print(results_df.sort_values("score"))
-    else:
-        print(results_df.sort_values("score", ascending=False))
+        print("\nBest Score:", best_score)
 
-    # Plot architecture comparison
-    plt.figure(figsize=(10, 5))
-    plt.plot(results_df["score"].values, marker='o')
-    plt.title("Architecture Comparison Across Experiments")
-    plt.xlabel("Experiment Index")
-    plt.ylabel("Score")
-    plt.show()
+        # -----------------------------
+        # Plot 1: Score vs Trial
+        # -----------------------------
+        trial_scores = [trial.value for trial in study.trials]
 
-    # -------------------------------------------------
-    # Recommendation
-    # -------------------------------------------------
-    print("\nRecommendation:")
-    print(f"For this dataset ({problem_type}), the best ANN architecture is:")
-    print(f"Hidden Layers: {best_config['hidden_layers']}")
-    print(f"Activation: {best_config['activation']}")
-    print(f"Dropout: {best_config['dropout']}")
-    print(f"Initialization: {best_config['init']}")
-    print("This configuration achieved the best validation performance.")
+        plt.figure(figsize=(10, 5))
+        plt.plot(trial_scores, marker='o')
+        plt.title("Optuna Trial Scores")
+        plt.xlabel("Trial")
+        plt.ylabel("Objective Value")
+        plt.grid(True)
+        plt.show()
 
-    # -------------------------------------------------
-    # Retrain Best Model
-    # -------------------------------------------------
-    print("\nRetraining Best Model on Full Dataset...")
+        # -----------------------------
+        # Plot 2: Best Score Progression
+        # -----------------------------
+        best_progression = []
+        best_so_far = float("inf")
 
-    best_model = BaseANN(
-        input_size=X.shape[1],
-        output_size=output_size,
-        hidden_layers=best_config["hidden_layers"],
-        activation=best_config["activation"],
-        dropout=best_config["dropout"],
-        init_type=best_config["init"]
-    )
+        for val in trial_scores:
+            if val < best_so_far:
+                best_so_far = val
+            best_progression.append(best_so_far)
 
-    X_full_train, X_full_val, y_full_train, y_full_val = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
+        plt.figure(figsize=(10, 5))
+        plt.plot(best_progression)
+        plt.title("Best Score Progression")
+        plt.xlabel("Trial")
+        plt.ylabel("Best Objective So Far")
+        plt.grid(True)
+        plt.show()
 
-    best_model, train_losses, val_losses = train_model(
-        best_model,
-        X_full_train,
-        y_full_train,
-        X_full_val,
-        y_full_val,
-        problem_type,
-        epochs=100,
-        patience=10
-    )
-
-    # Save model
-    torch.save(best_model.state_dict(), "best_model.pth")
-    print("Final model saved as best_model.pth")
-
-    # Final evaluation
-    final_metrics = evaluate_model(best_model, X_full_val, y_full_val, problem_type)
-
-    print("\nFinal Model Metrics:")
-    for k, v in final_metrics.items():
-        print(f"{k}: {v}")
-
-    # Plot convergence
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label="Train Loss")
-    plt.plot(val_losses, label="Validation Loss")
-    plt.title("Best Model Convergence")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.show()
+    print("\n=================================================")
+    print("EXPERIMENT COMPLETED")
+    print("=================================================")

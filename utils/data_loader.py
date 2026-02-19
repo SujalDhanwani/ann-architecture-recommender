@@ -1,344 +1,268 @@
 import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 
 
+# ==========================================================
+# LOAD CSV
+# ==========================================================
 def load_csv(path):
     return pd.read_csv(path)
 
 
+# ==========================================================
+# DETECT ID-LIKE COLUMNS
+# ==========================================================
+def detect_id_columns(df):
 
-def detect_column_types(df):
-    """
-    Detect numeric, categorical, boolean, and datetime columns.
-    """
-    column_types = {
-        "numeric": [],
-        "categorical": [],
-        "boolean": [],
-        "datetime": []
-    }
+    id_cols = []
 
     for col in df.columns:
-        series = df[col].dropna()
-        unique_vals = series.unique()
 
-        # Boolean detection (0/1, True/False, Yes/No)
-        bool_like = set(map(str, unique_vals))
-        if bool_like.issubset({"0","1","True","False","true","false","YES","NO"}):
-            column_types["boolean"].append(col)
+        # Column name contains ID-like patterns
+        if any(key in col.lower() for key in [
+            "id", "participant", "index", "uid", "user", "sr", "serial", "record"
+        ]):
+            id_cols.append(col)
             continue
 
-        # Datetime detection
+        # Column is basically row index
+        if df[col].nunique() == len(df):
+            id_cols.append(col)
+            continue
+
+        # Purely increasing 1..N sequence
+        if np.array_equal(df[col].values, np.arange(1, len(df) + 1)):
+            id_cols.append(col)
+            continue
+
+    return id_cols
+
+
+# ==========================================================
+# DETECT COLUMN TYPES
+# ==========================================================
+def detect_column_types(df):
+
+    types = {"numeric": [], "categorical": [], "boolean": [], "datetime": []}
+
+    for col in df.columns:
+
+        if pd.api.types.is_bool_dtype(df[col]):
+            types["boolean"].append(col)
+            continue
+
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            types["datetime"].append(col)
+            continue
+
+        # Try datetime parsing for mixed type
         try:
-            pd.to_datetime(series.iloc[0], infer_datetime_format=True)
-            column_types["datetime"].append(col)
+            pd.to_datetime(df[col], errors='raise')
+            types["datetime"].append(col)
             continue
         except:
             pass
 
-        # Numeric detection
         if pd.api.types.is_numeric_dtype(df[col]):
-            column_types["numeric"].append(col)
+            types["numeric"].append(col)
             continue
 
-        try:
-            series.astype(float)
-            column_types["numeric"].append(col)
-            continue
-        except:
-            pass
+        types["categorical"].append(col)
 
-        # Otherwise categorical
-        column_types["categorical"].append(col)
-
-    return column_types
+    return types
 
 
-def detect_problem_type_from_all_columns(df):
-    """
-    If any numeric column has many unique values → regression dataset.
-    Otherwise classification.
-    """
-    numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
-
-    for col in numeric_cols:
-        if df[col].nunique() > 20:
-            return "regression"
-
-    return "classification"
-
-
+# ==========================================================
+# TARGET DETECTION (INTELLIGENT)
+# ==========================================================
 def detect_target_column(df):
-    """
-    Detect target column using:
-    - regression → highest variance numeric column
-    - classification → lowest unique-value column
-    """
-    problem_type = detect_problem_type_from_all_columns(df)
-    n_rows = len(df)
-    unique_counts = {col: df[col].nunique() for col in df.columns}
 
-    # Remove ID-like columns (unique == row count)
-    filtered_cols = [col for col in df.columns if unique_counts[col] < n_rows]
+    id_cols = detect_id_columns(df)
+    candidates = [c for c in df.columns if c not in id_cols]
 
-   
-    if problem_type == "classification":
-        # smallest unique count = class labels
-        min_unique = min(unique_counts[col] for col in filtered_cols)
-        candidates = [col for col in filtered_cols if unique_counts[col] == min_unique]
-        return candidates[-1]   # choose last candidate
+    # Priority target names
+    priority_names = ["target", "label", "output", "y"]
+    for col in candidates:
+        if col.lower() in priority_names:
+            return col
 
-    # ------------------ REGRESSION TARGET ------------------ #
-    numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
+    # Choose numeric with highest variance
+    numeric_cols = df[candidates].select_dtypes(include=['int', 'float']).columns
     if len(numeric_cols) > 0:
-        variances = df[numeric_cols].var().sort_values(ascending=False)
-        return variances.index[0]
+        return df[numeric_cols].var().sort_values(ascending=False).index[0]
 
-    return df.columns[-1]  # fallback
+    # Last fallback
+    return candidates[-1]
 
 
-# -------------------------------------------------------------------
-# Final Problem Type Detection (using the actual target)
-# -------------------------------------------------------------------
-def detect_problem_type(df, target_col):
-    """
-    Final problem type detection using target column.
-    """
-    series = df[target_col].dropna()
-    num_unique = series.nunique()
+# ==========================================================
+# PROBLEM TYPE (CORRECT)
+# ==========================================================
+def detect_problem_type(df, target):
 
-    # Numeric target
-    if pd.api.types.is_numeric_dtype(series):
+    y = df[target]
+    uniq = y.nunique()
 
-        if num_unique > 20:
+    if pd.api.types.is_numeric_dtype(y):
+        if uniq > 20:
             return "regression"
-
-        if num_unique == 2:
+        if uniq == 2:
             return "binary_classification"
-
         return "multi_class_classification"
 
-    # Categorical target
-    if num_unique == 2:
+    # categorical
+    if uniq == 2:
         return "binary_classification"
 
-    if num_unique <= 20:
-        return "multi_class_classification"
-
-    return "regression"
+    return "multi_class_classification"
 
 
-def select_features(df, target_col):
-    """
-    Select valid feature columns by removing:
-    - target column
-    - ID-like columns
-    - single-unique columns
-    - fully missing columns
-    - very high-cardinality categoricals
-    """
-    
-    n_rows = len(df)
+# ==========================================================
+# INTELLIGENT FEATURE SELECTION
+# ==========================================================
+def select_features(df, target):
+
+    id_cols = detect_id_columns(df)
     features = []
 
     for col in df.columns:
 
-        # Remove target itself
-        if col == target_col:
+        if col == target:
             continue
 
-        # Remove fully missing columns
-        if df[col].isna().sum() == n_rows:
+        if col in id_cols:
             continue
 
-        # Remove single-unique columns
+        # fully missing
+        if df[col].isna().sum() == len(df):
+            continue
+
+        # no variance
         if df[col].nunique() <= 1:
             continue
 
-        # Remove ID-like columns
-        if df[col].nunique() == n_rows:
+        # too high cardinality
+        if df[col].dtype == "object" and df[col].nunique() > 100:
             continue
 
-        # Remove high-cardinality categoricals
-        if df[col].dtype == 'object' and df[col].nunique() > 100:
-            continue
-
-        # Otherwise keep it
         features.append(col)
 
     return features
 
 
-def handle_missing_values(df, column_types):
-    """
-    Handle missing data using:
-    - Drop columns with > 60% missing
-    - Numeric -> median
-    - Categorical/Boolean/Datetime -> mode
-    """
+# ==========================================================
+# MISSING VALUES
+# ==========================================================
+def handle_missing(df, types):
 
     df = df.copy()
-    n_rows = len(df)
 
-    # Drop high-missing columns
-    for col in df.columns:
-        missing_ratio = df[col].isna().mean()
-        if missing_ratio > 0.60:
-            df = df.drop(columns=[col])
-            continue
+    for col in types["numeric"]:
+        if col in df:
+            df[col] = df[col].fillna(df[col].median())
 
-    # --- Numeric columns ---
-    for col in column_types["numeric"]:
-        if col in df.columns:
-            median_val = df[col].median()
-            df[col] = df[col].fillna(median_val)
+    for col in types["categorical"]:
+        if col in df:
+            df[col] = df[col].fillna(df[col].mode()[0])
 
-    # --- Categorical columns ---
-    for col in column_types["categorical"]:
-        if col in df.columns:
-            mode_val = df[col].mode()[0]
-            df[col] = df[col].fillna(mode_val)
+    for col in types["boolean"]:
+        if col in df:
+            df[col] = df[col].fillna(df[col].mode()[0])
 
-    # --- Boolean columns ---
-    for col in column_types["boolean"]:
-        if col in df.columns:
-            mode_val = df[col].mode()[0]
-            df[col] = df[col].fillna(mode_val)
-
-    # --- Datetime columns ---
-    for col in column_types["datetime"]:
-        if col in df.columns:
-            mode_val = df[col].mode()[0]
-            df[col] = df[col].fillna(mode_val)
+    for col in types["datetime"]:
+        if col in df:
+            df[col] = df[col].fillna(df[col].mode()[0])
 
     return df
 
 
-
-from sklearn.preprocessing import LabelEncoder
-import pandas as pd
-
-def encode_categorical_columns(df, column_types):
+# ==========================================================
+# DATETIME EXPANSION
+# ==========================================================
+def extract_datetime(df, types):
     df = df.copy()
 
-    # ----- Get low-cardinality & mid-cardinality cols BEFORE modifying df -----
-    low_card_cols = [
-        col for col in column_types["categorical"]
-        if df[col].nunique() <= 20
-    ]
-
-    mid_card_cols = [
-        col for col in column_types["categorical"]
-        if 20 < df[col].nunique() <= 100
-    ]
-
-    # ------------------ ONE HOT ENCODE LOW CARDINALITY ------------------
-    if len(low_card_cols) > 0:
-        df = pd.get_dummies(df, columns=low_card_cols, drop_first=True)
-
-    # ------------------ LABEL ENCODE MID CARDINALITY ------------------
-    for col in mid_card_cols:
-        if col in df.columns:  # SAFE GUARD
-            le = LabelEncoder()
-            df[col] = le.fit_transform(df[col].astype(str))
-
-    return df
-
-
-def extract_datetime_features(df, column_types):
-    """
-    Convert datetime columns into numeric features:
-    - year, month, day, dayofweek, is_weekend, quarter
-    - hour, minute, second (if present)
-    """
-    df = df.copy()
-
-    for col in column_types["datetime"]:
-        # Convert column to datetime format
+    for col in types["datetime"]:
         df[col] = pd.to_datetime(df[col], errors='coerce')
 
-        # Extract features
         df[col + "_year"] = df[col].dt.year
         df[col + "_month"] = df[col].dt.month
         df[col + "_day"] = df[col].dt.day
-        df[col + "_dayofweek"] = df[col].dt.dayofweek
-        df[col + "_quarter"] = df[col].dt.quarter
-        df[col + "_is_weekend"] = df[col].dt.dayofweek.isin([5, 6]).astype(int)
+        df[col + "_dow"] = df[col].dt.dayofweek
 
-        # If time exists
-        df[col + "_hour"] = df[col].dt.hour
-        df[col + "_minute"] = df[col].dt.minute
-        df[col + "_second"] = df[col].dt.second
-
-        # Drop original datetime column
-        df = df.drop(columns=[col])
+        df.drop(columns=[col], inplace=True)
 
     return df
 
 
-from sklearn.preprocessing import StandardScaler
-from sklearn.preprocessing import StandardScaler
-import numpy as np
+# ==========================================================
+# ENCODING
+# ==========================================================
+def encode_categorical(df):
+    return pd.get_dummies(df, drop_first=True)
 
-def scale_numeric_columns(df):
+
+# ==========================================================
+# SCALE X FEATURES
+# ==========================================================
+def scale_X(df):
+
     df = df.copy()
-
     numeric_cols = df.select_dtypes(include=[np.number]).columns
 
-    scaler = StandardScaler()
-    df[numeric_cols] = scaler.fit_transform(df[numeric_cols])
+    # Skip binary/dummy columns
+    cont_cols = [c for c in numeric_cols if df[c].nunique() > 2]
+
+    # Skip zero variance
+    cont_cols = [c for c in cont_cols if df[c].std() > 0]
+
+    if cont_cols:
+        scaler = StandardScaler()
+        df[cont_cols] = scaler.fit_transform(df[cont_cols])
 
     return df
 
 
+# ==========================================================
+# MAIN PREPROCESS PIPELINE
+# ==========================================================
 def preprocess_dataset(path):
 
     df = load_csv(path)
 
-    # Detect types
-    column_types = detect_column_types(df)
-
-    # Detect target
+    # 1️⃣ Target detection
     target = detect_target_column(df)
+    problem_type = detect_problem_type(df, target)
 
-    # Select usable features
+    # 2️⃣ Feature selection
     features = select_features(df, target)
 
-    # Keep only features + target
-    df = df[features + [target]]
+    X = df[features].copy()
+    y = df[target].copy()
 
-    # 🔥 Separate target EARLY
-    y = df[target]
-    X = df.drop(columns=[target])
+    # 3️⃣ Handle missing + types
+    types = detect_column_types(X)
+    X = handle_missing(X, types)
 
-    # Re-detect types only on X
-    column_types = detect_column_types(X)
+    X = extract_datetime(X, types)
+    X = encode_categorical(X)
+    X = scale_X(X)
 
-    # Missing values
-    X = handle_missing_values(X, column_types)
+    # Safety cleanup
+    X = X.apply(pd.to_numeric, errors="coerce").fillna(0).astype(float)
 
-    # Datetime extraction
-    X = extract_datetime_features(X, column_types)
+    # 4️⃣ Target scaling for regression
+    y_scaler = None
 
-    # Re-detect types
-    column_types = detect_column_types(X)
-
-    # Encoding
-    X = encode_categorical_columns(X, column_types)
-
-    # Re-detect types
-    column_types = detect_column_types(X)
-
-    # Scaling
-    X = scale_numeric_columns(X)
-
-    # Force numeric
-    X = X.apply(pd.to_numeric, errors='coerce')
-    X = X.fillna(0)
-    X = X.astype(float)
+    if problem_type == "regression":
+        y_scaler = StandardScaler()
+        y = y_scaler.fit_transform(y.values.reshape(-1, 1)).flatten()
+        y = pd.Series(y)
 
     return X, y, {
         "target": target,
-        "column_types": column_types,
+        "problem_type": problem_type,
         "features": features,
-        "problem_type": detect_problem_type(df, target)
+        "y_scaler": y_scaler
     }
