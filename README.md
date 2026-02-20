@@ -1,81 +1,132 @@
-# 🧠 ANN Architecture Recommendation Engine
+#  ANN Architecture Recommendation Engine
 
-## Overview
+A complete **machine learning experimentation system** built from scratch using **PyTorch**, designed to automatically search, evaluate, and recommend the best Artificial Neural Network (ANN) architecture for any tabular dataset.
 
-This project implements a **modular Artificial Neural Network (ANN) experimentation framework** built entirely from scratch using **PyTorch**.
-
-The system automatically:
-
-- Loads and preprocesses tabular datasets  
-- Detects the target column  
-- Detects the problem type (Regression / Binary / Multi-class)  
-- Runs **Grid Search** or **Optuna Bayesian Optimization**  
-- Applies **early stopping**  
-- Compares architectures using validation performance  
-- Recommends the **best ANN architecture**  
-- Retrains and saves the final best model  
+This project mirrors **real ML engineering workflows**:
+**preprocessing → experiment engine → optimization → evaluation → best-model selection → UI**
 
 ---
 
-## 🚀 Features
+##  Key Features
 
-- Configurable hidden layers  
-- Configurable activation functions  
-- Dropout support  
-- Xavier & He initialization  
-- Multiple optimizers (Adam / SGD / RMSProp)  
-- Early stopping implementation  
-- Scaled regression targets  
-- Reproducible experiments (fixed random seeds)  
-- Fully automated preprocessing pipeline  
-- Modular ML engineering system  
+###  Automatic Dataset Understanding
+- Detects **target column**
+- Determines **problem type**
+  - Regression  
+  - Binary Classification  
+  - Multi-class Classification
+- Intelligent feature selection
+- Handles missing values
+- Safe categorical encoding
+- Safe numerical scaling
+- Date-Time feature extraction
 
 ---
 
-## 🔧 How to Run
+###  ANN Experimentation Engine
+- Configurable hidden layers
+- Activation functions (ReLU, Tanh)
+- Dropout regularization
+- Weight initialization (Xavier / He)
+- Multiple optimizers (Adam / SGD / RMSProp)
+- Early stopping
+- Reproducibility (fixed seeds)
 
-### 1. Install dependencies
-pip install -r requirements.txt
+---
 
-2. Run experiment system (CLI)
-    python main.py
+##  Experiment Strategies
+- **Grid Search**
+- **Optuna Bayesian Optimization**
+- Callbacks for real-time logging
 
-You will be prompted to select:
+---
 
-Grid Search
+##  Streamlit UI (Optional)
+- Upload dataset  
+- Live experiment logs  
+- Progress bar  
+- Results summary  
+- Best architecture display  
 
-Optuna Bayesian Optimization
+---
 
-📁 Project Structure
+##  Project Structure
 
-
+```plaintext
 models/
-    base_ann.py        → ANN model architecture
+    base_ann.py            → ANN model architecture
 
 training/
-    training_loop.py   → training + early stopping
-    evaluation.py      → metrics (RMSE/MAE/Accuracy/F1)
+    training_loop.py       → training engine + early stopping
+    evaluation.py          → metrics (RMSE, MAE, Accuracy, F1)
 
 utils/
-    data_loader.py     → preprocessing pipeline (encoding, scaling, datetime)
+    data_loader.py         → preprocessing pipeline (encoding, scaling, datetime)
 
-experiment_engine.py   → grid search + optuna experiments
-main.py                → CLI experiment runner
-app.py                 → Streamlit UI (optional)
+experiment_engine.py       → grid search + optuna optimization
+main.py                    → CLI experiment runner
+app.py                     → Streamlit UI (interactive mode)
 
+requirements.txt           → dependencies
+README.md                  → project documentation
+```
 
-## What This Project Demonstrates
+---
 
-. Deep understanding of ANN architecture
+##  Installation
 
-. Ability to build a full ML experimentation system
+```bash
+pip install -r requirements.txt
+```
 
-. Proper validation & early stopping
+---
 
-. Grid search & Bayesian optimization
+##  Running the CLI
 
-. Engineering-focused modular design
+```bash
+python main.py
+```
 
+<<<<<<< HEAD
 . End-to-end preprocessing automation
 
 
+=======
+You will be prompted to choose:
+
+1️ **Grid Search**  
+2️ **Optuna Bayesian Optimization**
+
+The system will train multiple architectures and select the best one.
+
+---
+
+## Running the UI (Streamlit)
+
+```bash
+streamlit run app.py
+```
+
+### Features in UI:
+- Dataset preview  
+- Automatic analysis  
+- Live logging  
+- Real-time trial updates  
+- Best architecture summary  
+
+---
+
+##  What This Project Demonstrates
+
+- Deep understanding of ANN architecture design  
+- Ability to build full ML pipelines  
+- Preprocessing automation for real datasets  
+- Engineering-focused experiment management  
+- Hyperparameter optimization (Grid + Bayesian)  
+- Strong ML code organization principles  
+- Real-world early stopping strategy  
+- End-to-end model selection workflow  
+
+This project is designed as a **learning-focused ML engineering system**, not just a model script.  
+It reflects how real teams build **experiment engines inside AI companies**.
+>>>>>>> 3395fe1c09216a2eb201ff4676e6b9b1965a8c19
