@@ -21,95 +21,141 @@ def train_model(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    # -------------------------------------------------
-    # Convert Data to Tensors
-    # -------------------------------------------------
+    # ======================================================
+    # Convert Data to Tensors (NaN-SAFE)
+    # ======================================================
     X_train_tensor = torch.tensor(
-        X_train.values, dtype=torch.float32
-    ).to(device)
+        X_train.values, dtype=torch.float32, device=device
+    )
 
     X_val_tensor = torch.tensor(
-        X_val.values, dtype=torch.float32
-    ).to(device)
+        X_val.values, dtype=torch.float32, device=device
+    )
 
+    # ----------- Target conversion -----------
     if problem_type == "multi_class_classification":
-        y_train_tensor = torch.tensor(
-            y_train.values, dtype=torch.long
-        ).to(device)
-
-        y_val_tensor = torch.tensor(
-            y_val.values, dtype=torch.long
-        ).to(device)
+        y_train_tensor = torch.tensor(y_train.values, dtype=torch.long, device=device)
+        y_val_tensor = torch.tensor(y_val.values, dtype=torch.long, device=device)
 
     else:
         y_train_tensor = torch.tensor(
-            y_train.values, dtype=torch.float32
-        ).view(-1, 1).to(device)
+            y_train.values, dtype=torch.float32, device=device
+        ).view(-1, 1)
 
         y_val_tensor = torch.tensor(
-            y_val.values, dtype=torch.float32
-        ).view(-1, 1).to(device)
+            y_val.values, dtype=torch.float32, device=device
+        ).view(-1, 1)
 
+    # ======================================================
+    # DataLoader
+    # ======================================================
     train_loader = DataLoader(
         TensorDataset(X_train_tensor, y_train_tensor),
         batch_size=batch_size,
-        shuffle=True
+        shuffle=True,
+        drop_last=False
     )
 
-    # -------------------------------------------------
+    # ======================================================
     # Loss + Optimizer
-    # -------------------------------------------------
+    # ======================================================
     criterion = get_loss_function(problem_type)
     optimizer = get_optimizer(model, lr=lr, optimizer_name=optimizer_name)
 
+    # Gradient clipping threshold
+    max_grad_norm = 5.0
+
     best_val_loss = float("inf")
-    best_model_state = None
+    best_state = None
     patience_counter = 0
 
-    # -------------------------------------------------
-    # Training Loop
-    # -------------------------------------------------
+    # ======================================================
+    # TRAINING LOOP
+    # ======================================================
     for epoch in range(epochs):
 
         model.train()
-        running_loss = 0.0
+        total_loss = 0.0
 
         for batch_X, batch_y in train_loader:
+
             optimizer.zero_grad()
-            outputs = model(batch_X)
-            loss = criterion(outputs, batch_y)
+
+            preds = model(batch_X)
+
+            # ----------- NaN / Inf detector -----------
+            if torch.isnan(preds).any() or torch.isinf(preds).any():
+                print("\n❌ NaN detected in predictions! Stopping batch...")
+                return model
+
+            # ----------- Compute loss safely -----------
+            try:
+                loss = criterion(preds, batch_y)
+            except Exception as e:
+                print("\n❌ Loss computation error:", e)
+                print("Pred shape:", preds.shape)
+                print("Target shape:", batch_y.shape)
+                raise e
+
+            # ----------- Loss explosion fix -----------
+            if torch.isnan(loss) or torch.isinf(loss):
+                print("\n❌ NaN/Inf loss encountered — skipping batch")
+                continue
+
+            # ----------- Backprop -----------
             loss.backward()
+
+            # ----------- Gradient clipping -----------
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+
             optimizer.step()
-            running_loss += loss.item()
 
-        train_loss = running_loss / len(train_loader)
+            total_loss += loss.item()
 
-        # ---------------- Validation ----------------
+        train_loss = total_loss / max(len(train_loader), 1)
+
+        # ======================================================
+        # VALIDATION
+        # ======================================================
         model.eval()
         with torch.no_grad():
-            val_outputs = model(X_val_tensor)
-            val_loss = criterion(val_outputs, y_val_tensor).item()
 
+            val_preds = model(X_val_tensor)
+
+            # guard
+            if torch.isnan(val_preds).any() or torch.isinf(val_preds).any():
+                print("❌ NaN in validation predictions")
+                break
+
+            val_loss = criterion(val_preds, y_val_tensor).item()
+
+        # ----------- Logging -----------
         print(
             f"Epoch [{epoch+1}/{epochs}] | "
             f"Train Loss: {train_loss:.4f} | "
             f"Val Loss: {val_loss:.4f}"
         )
 
-        # ---------------- Early Stopping ----------------
-    min_delta = 1e-4  # minimum improvement required
+        # ======================================================
+        # EARLY STOPPING
+        # ======================================================
+        min_delta = 1e-4
 
-    if best_val_loss - val_loss > min_delta:
-        best_val_loss = val_loss
-        best_model_state = model.state_dict()
-        patience_counter = 0
-    else:
-        patience_counter += 1
+        if val_loss + min_delta < best_val_loss:
+            best_val_loss = val_loss
+            best_state = model.state_dict()
+            patience_counter = 0
+        else:
+            patience_counter += 1
 
+        if patience_counter >= patience:
+            print(f"⏹ Early stopping triggered at epoch {epoch+1}")
+            break
 
-
-    # Restore best model weights
-    if best_model_state is not None:
-        model.load_state_dict(best_model_state)
+    # ======================================================
+    # Restore BEST model
+    # ======================================================
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     return model

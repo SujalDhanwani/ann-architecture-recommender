@@ -1,38 +1,35 @@
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler
 
 
 # ==========================================================
-# LOAD CSV
+# LOAD CSV (UTF-8 fallback safe)
 # ==========================================================
 def load_csv(path):
-    return pd.read_csv(path)
+    try:
+        return pd.read_csv(path)
+    except UnicodeDecodeError:
+        return pd.read_csv(path, encoding="latin1", engine="python")
 
 
 # ==========================================================
 # DETECT ID-LIKE COLUMNS
 # ==========================================================
 def detect_id_columns(df):
-
     id_cols = []
 
     for col in df.columns:
 
-        # Column name contains ID-like patterns
-        if any(key in col.lower() for key in [
-            "id", "participant", "index", "uid", "user", "sr", "serial", "record"
-        ]):
+        col_lower = col.lower()
+
+        # Name-based detection
+        if any(key in col_lower for key in ["id", "participant", "index", "sr", "uid", "user", "record"]):
             id_cols.append(col)
             continue
 
-        # Column is basically row index
+        # Unique for every row → ID-like
         if df[col].nunique() == len(df):
-            id_cols.append(col)
-            continue
-
-        # Purely increasing 1..N sequence
-        if np.array_equal(df[col].values, np.arange(1, len(df) + 1)):
             id_cols.append(col)
             continue
 
@@ -40,67 +37,32 @@ def detect_id_columns(df):
 
 
 # ==========================================================
-# DETECT COLUMN TYPES
-# ==========================================================
-def detect_column_types(df):
-
-    types = {"numeric": [], "categorical": [], "boolean": [], "datetime": []}
-
-    for col in df.columns:
-
-        if pd.api.types.is_bool_dtype(df[col]):
-            types["boolean"].append(col)
-            continue
-
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            types["datetime"].append(col)
-            continue
-
-        # Try datetime parsing for mixed type
-        try:
-            pd.to_datetime(df[col], errors='raise')
-            types["datetime"].append(col)
-            continue
-        except:
-            pass
-
-        if pd.api.types.is_numeric_dtype(df[col]):
-            types["numeric"].append(col)
-            continue
-
-        types["categorical"].append(col)
-
-    return types
-
-
-# ==========================================================
-# TARGET DETECTION (INTELLIGENT)
+# TARGET DETECTION (SMART)
 # ==========================================================
 def detect_target_column(df):
 
     id_cols = detect_id_columns(df)
     candidates = [c for c in df.columns if c not in id_cols]
 
-    # Priority target names
-    priority_names = ["target", "label", "output", "y"]
+    # Priority names if exist
+    priority = ["target", "label", "output", "y"]
     for col in candidates:
-        if col.lower() in priority_names:
+        if col.lower() in priority:
             return col
 
-    # Choose numeric with highest variance
-    numeric_cols = df[candidates].select_dtypes(include=['int', 'float']).columns
-    if len(numeric_cols) > 0:
-        return df[numeric_cols].var().sort_values(ascending=False).index[0]
+    # Highest variance numeric column
+    numeric = df[candidates].select_dtypes(include=[np.number])
+    if len(numeric.columns) > 0:
+        return numeric.var().sort_values(ascending=False).index[0]
 
-    # Last fallback
+    # Fallback last column
     return candidates[-1]
 
 
 # ==========================================================
-# PROBLEM TYPE (CORRECT)
+# PROBLEM TYPE
 # ==========================================================
 def detect_problem_type(df, target):
-
     y = df[target]
     uniq = y.nunique()
 
@@ -111,7 +73,6 @@ def detect_problem_type(df, target):
             return "binary_classification"
         return "multi_class_classification"
 
-    # categorical
     if uniq == 2:
         return "binary_classification"
 
@@ -119,10 +80,9 @@ def detect_problem_type(df, target):
 
 
 # ==========================================================
-# INTELLIGENT FEATURE SELECTION
+# FEATURE SELECTION (VERY CLEAN)
 # ==========================================================
 def select_features(df, target):
-
     id_cols = detect_id_columns(df)
     features = []
 
@@ -134,16 +94,16 @@ def select_features(df, target):
         if col in id_cols:
             continue
 
-        # fully missing
+        # Fully missing
         if df[col].isna().sum() == len(df):
             continue
 
-        # no variance
+        # Constant values
         if df[col].nunique() <= 1:
             continue
 
-        # too high cardinality
-        if df[col].dtype == "object" and df[col].nunique() > 100:
+        # Very high-cardinality categoricals (>100 unique)
+        if df[col].dtype == object and df[col].nunique() > 100:
             continue
 
         features.append(col)
@@ -152,80 +112,29 @@ def select_features(df, target):
 
 
 # ==========================================================
-# MISSING VALUES
+# SAFE SCALING (ONLY NUMERIC, NO CATEGORICAL)
 # ==========================================================
-def handle_missing(df, types):
+def scale_X(X):
 
-    df = df.copy()
+    X = X.copy()
 
-    for col in types["numeric"]:
-        if col in df:
-            df[col] = df[col].fillna(df[col].median())
+    numeric_cols = X.select_dtypes(include=[np.number]).columns
 
-    for col in types["categorical"]:
-        if col in df:
-            df[col] = df[col].fillna(df[col].mode()[0])
+    # Remove binary/dummy & zero variance
+    good_cols = [
+        col for col in numeric_cols
+        if X[col].nunique() > 2 and X[col].std() > 1e-8
+    ]
 
-    for col in types["boolean"]:
-        if col in df:
-            df[col] = df[col].fillna(df[col].mode()[0])
-
-    for col in types["datetime"]:
-        if col in df:
-            df[col] = df[col].fillna(df[col].mode()[0])
-
-    return df
-
-
-# ==========================================================
-# DATETIME EXPANSION
-# ==========================================================
-def extract_datetime(df, types):
-    df = df.copy()
-
-    for col in types["datetime"]:
-        df[col] = pd.to_datetime(df[col], errors='coerce')
-
-        df[col + "_year"] = df[col].dt.year
-        df[col + "_month"] = df[col].dt.month
-        df[col + "_day"] = df[col].dt.day
-        df[col + "_dow"] = df[col].dt.dayofweek
-
-        df.drop(columns=[col], inplace=True)
-
-    return df
-
-
-# ==========================================================
-# ENCODING
-# ==========================================================
-def encode_categorical(df):
-    return pd.get_dummies(df, drop_first=True)
-
-
-# ==========================================================
-# SCALE X FEATURES
-# ==========================================================
-def scale_X(df):
-
-    df = df.copy()
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-
-    # Skip binary/dummy columns
-    cont_cols = [c for c in numeric_cols if df[c].nunique() > 2]
-
-    # Skip zero variance
-    cont_cols = [c for c in cont_cols if df[c].std() > 0]
-
-    if cont_cols:
+    if good_cols:
         scaler = StandardScaler()
-        df[cont_cols] = scaler.fit_transform(df[cont_cols])
+        X[good_cols] = scaler.fit_transform(X[good_cols])
 
-    return df
+    return X
 
 
 # ==========================================================
-# MAIN PREPROCESS PIPELINE
+# MAIN PREPROCESS FUNCTION (FINAL)
 # ==========================================================
 def preprocess_dataset(path):
 
@@ -241,28 +150,30 @@ def preprocess_dataset(path):
     X = df[features].copy()
     y = df[target].copy()
 
-    # 3️⃣ Handle missing + types
-    types = detect_column_types(X)
-    X = handle_missing(X, types)
+    # 3️⃣ Make X fully numeric
+    X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
 
-    X = extract_datetime(X, types)
-    X = encode_categorical(X)
+    # 4️⃣ Clip extreme values (fixes exploding gradients)
+    X = X.clip(-1e6, 1e6)
+
+    # 5️⃣ Scale X
     X = scale_X(X)
+    X = X.astype(float)
 
-    # Safety cleanup
-    X = X.apply(pd.to_numeric, errors="coerce").fillna(0).astype(float)
-
-    # 4️⃣ Target scaling for regression
+    # 6️⃣ Target scaling ONLY for regression
     y_scaler = None
+    original_y = None
 
     if problem_type == "regression":
         y_scaler = StandardScaler()
-        y = y_scaler.fit_transform(y.values.reshape(-1, 1)).flatten()
+        original_y = y.values.reshape(-1, 1)
+        y = y_scaler.fit_transform(original_y).flatten()
         y = pd.Series(y)
 
     return X, y, {
         "target": target,
         "problem_type": problem_type,
         "features": features,
-        "y_scaler": y_scaler
+        "y_scaler": y_scaler,
+        "original_y": original_y
     }

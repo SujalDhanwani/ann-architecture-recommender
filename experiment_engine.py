@@ -8,6 +8,7 @@ from models.base_ann import BaseANN
 from training.training_loop import train_model
 from training.evaluation import evaluate_model
 from utils.data_loader import preprocess_dataset
+import torch
 
 
 # =====================================================================
@@ -19,16 +20,20 @@ def run_grid_search(file_path, callback_fn=None):
 
     X, y, info = preprocess_dataset(file_path)
     problem_type = info["problem_type"]
+    y_scaler = info.get("y_scaler")
 
+    # ---- Train / Validation Split ----
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
 
-    output_size = (
-        1 if problem_type in ["regression", "binary_classification"]
-        else len(np.unique(y))
-    )
+    # Output size
+    if problem_type in ["regression", "binary_classification"]:
+        output_size = 1
+    else:
+        output_size = len(np.unique(y_train))
 
+    # Search space
     hidden_layer_options = [[32], [64, 32], [128, 64]]
     activation_options = ["relu", "tanh"]
     dropout_options = [0.0, 0.3]
@@ -49,13 +54,10 @@ def run_grid_search(file_path, callback_fn=None):
             for dropout in dropout_options:
                 for init_type in init_options:
 
-                    # -----------------------------
-                    # LIVE LOGGING
-                    # -----------------------------
                     if callback_fn:
                         callback_fn(
-                            f"[Experiment {exp_counter}/{total_experiments}] "
-                            f"HL={hidden_layers}, Act={activation}, Dropout={dropout}, Init={init_type}"
+                            f"[Exp {exp_counter}/{total_experiments}] "
+                            f"HL={hidden_layers}, Act={activation}, Drop={dropout}, Init={init_type}"
                         )
 
                     start_exp = time.time()
@@ -76,11 +78,13 @@ def run_grid_search(file_path, callback_fn=None):
                         X_val,
                         y_val,
                         problem_type,
-                        epochs=100,
-                        patience=5
+                        epochs=60,
+                        patience=8,
                     )
 
-                    metrics = evaluate_model(model, X_val, y_val, problem_type)
+                    metrics = evaluate_model(
+                        model, X_val, y_val, problem_type, y_scaler=y_scaler
+                    )
 
                     score = (
                         metrics["RMSE"]
@@ -103,16 +107,19 @@ def run_grid_search(file_path, callback_fn=None):
 
                     exp_counter += 1
 
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
     total_time = time.time() - start_total
 
     if callback_fn:
-        callback_fn(f"Grid search completed in {total_time:.2f} seconds.")
+        callback_fn(f"Grid Search Completed in {total_time/60:.2f} minutes.")
 
     results_df = pd.DataFrame(results)
 
-    # Select best config
+    # Choose best config
     best_config = (
-        min(results, key=lambda x: x["score"])
+        min(results, key=lambda x: x["score"])  # RMSE → lower is better
         if problem_type == "regression"
         else max(results, key=lambda x: x["score"])
     )
@@ -126,7 +133,7 @@ def run_grid_search(file_path, callback_fn=None):
 
 
 # =====================================================================
-# OPTUNA SEARCH (with callback for Streamlit)
+# OPTUNA SEARCH
 # =====================================================================
 def run_optuna_search(file_path, n_trials=15, callback_fn=None):
 
@@ -134,26 +141,25 @@ def run_optuna_search(file_path, n_trials=15, callback_fn=None):
 
     X, y, info = preprocess_dataset(file_path)
     problem_type = info["problem_type"]
+    y_scaler = info.get("y_scaler")
 
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
 
-    output_size = (
-        1 if problem_type in ["regression", "binary_classification"]
-        else len(np.unique(y))
-    )
+    if problem_type in ["regression", "binary_classification"]:
+        output_size = 1
+    else:
+        output_size = len(np.unique(y_train))
 
-    # -----------------------------
-    # Objective Function
-    # -----------------------------
+    # Optuna objective
     def objective(trial):
 
-        hidden1 = trial.suggest_int("hidden1", 32, 128)
-        hidden2 = trial.suggest_int("hidden2", 16, 64)
-        dropout = trial.suggest_float("dropout", 0.0, 0.5)
+        hidden1 = trial.suggest_int("hidden1", 16, 64)
+        hidden2 = trial.suggest_int("hidden2", 8, 32)
+        dropout = trial.suggest_float("dropout", 0.0, 0.4)
         activation = trial.suggest_categorical("activation", ["relu", "tanh"])
-        lr = trial.suggest_float("lr", 1e-4, 1e-2, log=True)
+        lr = trial.suggest_float("lr", 1e-5, 5e-4, log=True)
         optimizer_name = trial.suggest_categorical("optimizer", ["adam", "sgd", "rmsprop"])
 
         start_t = time.time()
@@ -175,12 +181,14 @@ def run_optuna_search(file_path, n_trials=15, callback_fn=None):
             y_val,
             problem_type,
             epochs=60,
-            patience=5,
+            patience=8,
             lr=lr,
             optimizer_name=optimizer_name
         )
 
-        metrics = evaluate_model(model, X_val, y_val, problem_type)
+        metrics = evaluate_model(
+            model, X_val, y_val, problem_type, y_scaler=y_scaler
+        )
 
         score = (
             metrics["RMSE"]
@@ -190,12 +198,14 @@ def run_optuna_search(file_path, n_trials=15, callback_fn=None):
 
         elapsed = time.time() - start_t
 
-        # Live logging
         if callback_fn:
             callback_fn(
-                f"Trial {trial.number+1}/{n_trials} | Score={score:.4f} | "
-                f"Time={elapsed:.2f}s"
+                f"Trial {trial.number+1}/{n_trials} "
+                f"| Score={score:.4f} | Time={elapsed:.2f}s"
             )
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         return score
 
@@ -205,7 +215,7 @@ def run_optuna_search(file_path, n_trials=15, callback_fn=None):
     total_time = time.time() - start_total
 
     if callback_fn:
-        callback_fn(f"Optuna Completed in {total_time:.2f} seconds.")
+        callback_fn(f"Optuna Completed in {total_time/60:.2f} minutes.")
 
     return {
         "strategy": "optuna",
@@ -225,7 +235,11 @@ def run_experiment(file_path, search_strategy="grid", callback_fn=None, n_trials
         return run_grid_search(file_path, callback_fn=callback_fn)
 
     elif search_strategy == "optuna":
-        return run_optuna_search(file_path, n_trials=n_trials, callback_fn=callback_fn)
+        return run_optuna_search(
+            file_path,
+            n_trials=n_trials,
+            callback_fn=callback_fn
+        )
 
     else:
         raise ValueError("Unsupported search strategy.")

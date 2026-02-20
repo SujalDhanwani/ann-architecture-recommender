@@ -13,12 +13,13 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("ANN Architecture Recommendation Engine")
-st.write("Upload your dataset and the system will automatically search for the best ANN architecture.")
+st.title("🧠 ANN Architecture Recommendation Engine")
+st.write("Upload your dataset and automatically discover the best ANN configuration.")
 
 # Initialize log storage
 if "log" not in st.session_state:
     st.session_state.log = []
+
 
 # -------------------------------------------------
 # File Upload
@@ -26,7 +27,13 @@ if "log" not in st.session_state:
 uploaded_file = st.file_uploader("📂 Upload CSV File", type=["csv"])
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file, encoding_errors='replace')
+
+    # Safe CSV loading
+    try:
+        df = pd.read_csv(uploaded_file)
+    except:
+        df = pd.read_csv(uploaded_file, encoding="latin1", engine="python")
+
     st.subheader("📊 Dataset Preview")
     st.dataframe(df.head())
 
@@ -34,7 +41,11 @@ if uploaded_file:
     df.to_csv(temp_path, index=False)
 
     # Preprocess
-    X, y, info = preprocess_dataset(temp_path)
+    try:
+        X, y, info = preprocess_dataset(temp_path)
+    except Exception as e:
+        st.error(f"❌ Preprocessing Failed: {e}")
+        st.stop()
 
     st.subheader("📌 Dataset Analysis")
     col1, col2, col3 = st.columns(3)
@@ -42,11 +53,12 @@ if uploaded_file:
     col2.metric("Columns", df.shape[1])
     col3.metric("Features Used", len(info["features"]))
 
-    st.write("**Target Column:**", info["target"])
-    st.write("**Problem Type:**", info["problem_type"])
+    st.write("**Target Column →**", info["target"])
+    st.write("**Problem Type →**", info["problem_type"])
+
 
     # -------------------------------------------------
-    # Choose Search Strategy
+    # Search Strategy
     # -------------------------------------------------
     st.subheader("⚙ Choose Search Strategy")
 
@@ -57,84 +69,95 @@ if uploaded_file:
 
     n_trials = None
     if strategy == "Optuna Bayesian Optimization":
-        n_trials = st.slider("Number of Optuna Trials", 5, 40, 15)
+        n_trials = st.slider("Optuna Trials", 5, 40, 15)
+
 
     # -------------------------------------------------
-    # Run Button
+    # Run Experiment
     # -------------------------------------------------
-    if st.button(" Run ANN Experiment"):
+    if st.button("🚀 Run ANN Experiment"):
 
-        st.subheader(" Live Experiment Logs")
-
-        # Log box + Progress bar
+        st.subheader("📡 Live Logs")
         log_box = st.empty()
         progress_bar = st.progress(0)
         st.session_state.log = []
 
-        start_time = time.time()
-
-        # -------------------------------
-        # Logging function for UI
-        # -------------------------------
-        def stream_log(msg):
+        def stream_log(msg: str):
+            """Display last 15 log lines safely."""
             st.session_state.log.append(msg)
             log_box.markdown("```\n" + "\n".join(st.session_state.log[-15:]) + "\n```")
 
         stream_log("Experiment Started...")
 
-        # -------------------------------
-        # Run Grid Search
-        # -------------------------------
+        start = time.time()
+
+        # ---------------------------
+        # Run GRID
+        # ---------------------------
         if strategy == "Grid Search":
-            result = run_experiment(
-                temp_path,
-                search_strategy="grid",
-                callback_fn=stream_log
-            )
+
+            try:
+                result = run_experiment(
+                    temp_path,
+                    search_strategy="grid",
+                    callback_fn=stream_log
+                )
+            except Exception as e:
+                st.error(f"❌ Grid Search Failed: {e}")
+                st.stop()
+
             progress_bar.progress(100)
             stream_log("Grid Search Completed.")
 
-        # -------------------------------
-        # Run Optuna
-        # -------------------------------
+        # ---------------------------
+        # Run OPTUNA
+        # ---------------------------
         else:
-            current_trial = {"num": 0}
+            current_trial = {"count": 0}
 
-            def wrapped_callback(text):
-                """Receive messages from Optuna and show live."""
-                stream_log(text)
-                current_trial["num"] += 1
-                progress = min(current_trial["num"] / n_trials, 1.0)
-                progress_bar.progress(progress)
+            def wrapped_callback(msg):
+                stream_log(msg)
+                current_trial["count"] += 1
+                step = min(current_trial["count"] / n_trials, 1.0)
+                progress_bar.progress(step)
 
-            result = run_experiment(
-                temp_path,
-                search_strategy="optuna",
-                callback_fn=wrapped_callback,
-                n_trials=n_trials
-            )
+            try:
+                result = run_experiment(
+                    temp_path,
+                    search_strategy="optuna",
+                    callback_fn=wrapped_callback,
+                    n_trials=n_trials
+                )
+            except Exception as e:
+                st.error(f"❌ Optuna Failed: {e}")
+                st.stop()
 
             stream_log("Optuna Optimization Completed.")
 
-        # -------------------------------
+        # ---------------------------
         # Total Time
-        # -------------------------------
-        total_time = time.time() - start_time
-        mins = int(total_time // 60)
-        secs = int(total_time % 60)
+        # ---------------------------
+        total_time = time.time() - start
+        mins, secs = int(total_time // 60), int(total_time % 60)
 
-        st.success(f"🎉 Completed in {mins} minutes {secs} seconds!")
+        st.success(f"🎉 Completed in {mins} min {secs} sec")
 
-        # -------------------------------
-        # Final Output
-        # -------------------------------
-        st.subheader(" Best Configuration")
+        # ---------------------------
+        # BEST RESULT OUTPUT
+        # ---------------------------
+        st.subheader("🏆 Best Configuration")
+        st.json(result["best_config"])
+
+        # ---------------------------------
+        # Score Label (Adaptive)
+        # ---------------------------------
+        if info["problem_type"] == "regression":
+            score_label = "Best RMSE"
+        else:
+            score_label = "Best Accuracy"
+
+        if result["strategy"] == "optuna":
+            st.metric(score_label, value=round(result["best_score"], 4))
 
         if result["strategy"] == "grid":
-            st.json(result["best_config"])
-            st.write("Grid Search complete.")
-
-        else:
-            st.json(result["best_config"])
-            st.write("Best Score:", result["best_score"])
-
+            st.write("Grid search completed. Best configuration displayed above.")
